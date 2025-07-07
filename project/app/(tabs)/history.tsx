@@ -1,8 +1,25 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Calendar, Download, Filter, TrendingUp, MapPin, Thermometer, Gauge } from 'lucide-react-native';
+import { Calendar, Download, Filter, TrendingUp, MapPin, Thermometer, Gauge, RefreshCw } from 'lucide-react-native';
+import { fetchHistoricalData } from '../../services/ThingSpeakService';
+import { GpsData } from '../../models/GpsData';
+
+interface DailyData {
+  date: string;
+  dayName: string;
+  temperature: { min: number; max: number; avg: number } | null;
+  pressure: { min: number; max: number; avg: number } | null;
+  safeZoneStatus: 'inside' | 'outside';
+  alerts: number;
+  dataPoints: number;
+}
 
 export default function HistoryScreen() {
+  const [historicalData, setHistoricalData] = useState<GpsData[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
   const mockData = {
     dateRange: 'Last 7 Days',
     summary: {

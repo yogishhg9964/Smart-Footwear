@@ -1,70 +1,136 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Calendar, Download, Filter, TrendingUp, MapPin, Thermometer, Gauge } from 'lucide-react-native';
+import { Calendar, Download, Filter, TrendingUp, MapPin, Thermometer, Gauge, RefreshCw } from 'lucide-react-native';
+import { fetchHistoricalData } from '../../services/ThingSpeakService';
+import { GpsData } from '../../models/GpsData';
+
+interface DailyData {
+  date: string;
+  dayName: string;
+  temperature: { min: number; max: number; avg: number } | null;
+  pressure: { min: number; max: number; avg: number } | null;
+  safeZoneStatus: 'inside' | 'outside';
+  alerts: number;
+  dataPoints: number;
+}
 
 export default function HistoryScreen() {
-  const mockData = {
-    dateRange: 'Last 7 Days',
-    summary: {
-      totalSteps: 8542,
-      avgTemp: 36.7,
-      avgPressure: 847,
-      alertsCount: 3,
-      safeZoneTime: '85%',
-    },
-    dailyData: [
-      {
-        date: '2024-01-20',
-        dayName: 'Today',
-        steps: 1245,
-        temperature: { min: 36.2, max: 37.1, avg: 36.8 },
-        pressure: { min: 820, max: 890, avg: 855 },
-        safeZoneStatus: 'inside',
-        alerts: 0,
-      },
-      {
-        date: '2024-01-19',
-        dayName: 'Yesterday',
-        steps: 1890,
-        temperature: { min: 36.1, max: 36.9, avg: 36.6 },
-        pressure: { min: 810, max: 875, avg: 842 },
-        safeZoneStatus: 'inside',
-        alerts: 1,
-      },
-      {
-        date: '2024-01-18',
-        dayName: 'Thu',
-        steps: 2156,
-        temperature: { min: 36.3, max: 37.2, avg: 36.8 },
-        pressure: { min: 825, max: 885, avg: 850 },
-        safeZoneStatus: 'outside',
-        alerts: 2,
-      },
-      {
-        date: '2024-01-17',
-        dayName: 'Wed',
-        steps: 987,
-        temperature: { min: 36.0, max: 36.8, avg: 36.5 },
-        pressure: { min: 805, max: 860, avg: 835 },
-        safeZoneStatus: 'inside',
-        alerts: 0,
-      },
-      {
-        date: '2024-01-16',
-        dayName: 'Tue',
-        steps: 1456,
-        temperature: { min: 36.2, max: 37.0, avg: 36.7 },
-        pressure: { min: 815, max: 880, avg: 845 },
-        safeZoneStatus: 'inside',
-        alerts: 0,
-      },
-    ],
-    weeklyTrends: {
-      temperatureTrend: 'stable',
-      pressureTrend: 'increasing',
-      activityTrend: 'decreasing',
-    },
+  const [historicalData, setHistoricalData] = useState<GpsData[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  // Fetch historical data
+  const fetchData = async () => {
+    try {
+      setError(null);
+      const data = await fetchHistoricalData(168); // Get last 168 data points (about 7 days if data every hour)
+      setHistoricalData(data);
+      console.log(`Fetched ${data.length} historical data points`);
+    } catch (err) {
+      setError('Failed to fetch historical data');
+      console.error('Error fetching historical data:', err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchData();
+  };
+
+  // Process historical data into daily summaries
+  const processDailyData = (): DailyData[] => {
+    if (historicalData.length === 0) return [];
+
+    const dailyGroups: { [key: string]: GpsData[] } = {};
+
+    // Group data by date
+    historicalData.forEach(item => {
+      const date = new Date(item.createdAt).toDateString();
+      if (!dailyGroups[date]) {
+        dailyGroups[date] = [];
+      }
+      dailyGroups[date].push(item);
+    });
+
+    // Convert to daily summaries
+    const dailyData: DailyData[] = Object.entries(dailyGroups)
+      .map(([dateStr, dayData]) => {
+        const date = new Date(dateStr);
+        const temperatures = dayData.filter(d => d.temperature !== undefined).map(d => d.temperature!);
+        const pressures = dayData.filter(d => d.pressure !== undefined).map(d => d.pressure!);
+        const insideCount = dayData.filter(d => d.status === 'inside').length;
+
+        return {
+          date: date.toISOString().split('T')[0],
+          dayName: getDayName(date),
+          temperature: temperatures.length > 0 ? {
+            min: Math.min(...temperatures),
+            max: Math.max(...temperatures),
+            avg: temperatures.reduce((a, b) => a + b, 0) / temperatures.length
+          } : null,
+          pressure: pressures.length > 0 ? {
+            min: Math.min(...pressures),
+            max: Math.max(...pressures),
+            avg: pressures.reduce((a, b) => a + b, 0) / pressures.length
+          } : null,
+          safeZoneStatus: insideCount > dayData.length / 2 ? 'inside' : 'outside',
+          alerts: dayData.filter(d => d.status === 'outside').length,
+          dataPoints: dayData.length
+        };
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 7); // Last 7 days
+
+    return dailyData;
+  };
+
+  const getDayName = (date: Date): string => {
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    if (date.toDateString() === today.toDateString()) return 'Today';
+    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+
+    return date.toLocaleDateString('en-US', { weekday: 'short' });
+  };
+
+  // Calculate summary statistics
+  const calculateSummary = () => {
+    if (historicalData.length === 0) {
+      return {
+        avgTemp: 0,
+        avgPressure: 0,
+        alertsCount: 0,
+        safeZoneTime: '0%',
+        dataPoints: 0
+      };
+    }
+
+    const temperatures = historicalData.filter(d => d.temperature !== undefined).map(d => d.temperature!);
+    const pressures = historicalData.filter(d => d.pressure !== undefined).map(d => d.pressure!);
+    const insideCount = historicalData.filter(d => d.status === 'inside').length;
+    const outsideCount = historicalData.filter(d => d.status === 'outside').length;
+
+    return {
+      avgTemp: temperatures.length > 0 ? temperatures.reduce((a, b) => a + b, 0) / temperatures.length : 0,
+      avgPressure: pressures.length > 0 ? pressures.reduce((a, b) => a + b, 0) / pressures.length : 0,
+      alertsCount: outsideCount,
+      safeZoneTime: historicalData.length > 0 ? `${Math.round((insideCount / historicalData.length) * 100)}%` : '0%',
+      dataPoints: historicalData.length
+    };
+  };
+
+  const dailyData = processDailyData();
+  const summary = calculateSummary();
 
   const getTrendColor = (trend: string) => {
     switch (trend) {
@@ -82,16 +148,37 @@ export default function HistoryScreen() {
     }
   };
 
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#2196F3" />
+          <Text style={styles.loadingText}>Loading historical data...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
         {/* Header */}
         <View style={styles.header}>
           <View>
             <Text style={styles.title}>History & Analytics</Text>
-            <Text style={styles.subtitle}>{mockData.dateRange}</Text>
+            <Text style={styles.subtitle}>
+              {historicalData.length > 0 ? `Last ${Math.ceil(historicalData.length / 24)} days` : 'No data available'}
+            </Text>
           </View>
           <View style={styles.headerButtons}>
+            <TouchableOpacity style={styles.headerButton} onPress={onRefresh}>
+              <RefreshCw size={20} color="#666" />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.headerButton}>
               <Filter size={20} color="#666" />
             </TouchableOpacity>
@@ -101,148 +188,139 @@ export default function HistoryScreen() {
           </View>
         </View>
 
+        {error && (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>{error}</Text>
+            <TouchableOpacity style={styles.retryButton} onPress={fetchData}>
+              <Text style={styles.retryButtonText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Summary Cards */}
         <View style={styles.summaryContainer}>
           <View style={styles.summaryRow}>
             <View style={styles.summaryCard}>
-              <Text style={styles.summaryValue}>{mockData.summary.totalSteps.toLocaleString()}</Text>
-              <Text style={styles.summaryLabel}>Total Steps</Text>
+              <Text style={styles.summaryValue}>{summary.dataPoints}</Text>
+              <Text style={styles.summaryLabel}>Data Points</Text>
             </View>
             <View style={styles.summaryCard}>
-              <Text style={styles.summaryValue}>{mockData.summary.avgTemp}°C</Text>
+              <Text style={styles.summaryValue}>
+                {summary.avgTemp > 0 ? `${summary.avgTemp.toFixed(1)}°C` : 'N/A'}
+              </Text>
               <Text style={styles.summaryLabel}>Avg Temperature</Text>
             </View>
           </View>
           <View style={styles.summaryRow}>
             <View style={styles.summaryCard}>
-              <Text style={styles.summaryValue}>{mockData.summary.avgPressure}</Text>
+              <Text style={styles.summaryValue}>
+                {summary.avgPressure > 0 ? summary.avgPressure.toFixed(0) : 'N/A'}
+              </Text>
               <Text style={styles.summaryLabel}>Avg Pressure</Text>
             </View>
             <View style={styles.summaryCard}>
-              <Text style={styles.summaryValue}>{mockData.summary.safeZoneTime}</Text>
+              <Text style={styles.summaryValue}>{summary.safeZoneTime}</Text>
               <Text style={styles.summaryLabel}>Safe Zone Time</Text>
             </View>
           </View>
         </View>
 
-        {/* Weekly Trends */}
-        <View style={styles.sectionContainer}>
-          <Text style={styles.sectionTitle}>Weekly Trends</Text>
-          <View style={styles.trendsCard}>
-            <View style={styles.trendItem}>
-              <Thermometer size={20} color="#F44336" />
-              <Text style={styles.trendLabel}>Temperature</Text>
-              {getTrendIcon(mockData.weeklyTrends.temperatureTrend)}
-              <Text style={[styles.trendValue, { color: getTrendColor(mockData.weeklyTrends.temperatureTrend) }]}>
-                {mockData.weeklyTrends.temperatureTrend}
-              </Text>
-            </View>
-            
-            <View style={styles.trendItem}>
-              <Gauge size={20} color="#FF9800" />
-              <Text style={styles.trendLabel}>Pressure</Text>
-              {getTrendIcon(mockData.weeklyTrends.pressureTrend)}
-              <Text style={[styles.trendValue, { color: getTrendColor(mockData.weeklyTrends.pressureTrend) }]}>
-                {mockData.weeklyTrends.pressureTrend}
-              </Text>
-            </View>
-            
-            <View style={styles.trendItem}>
-              <MapPin size={20} color="#2196F3" />
-              <Text style={styles.trendLabel}>Activity</Text>
-              {getTrendIcon(mockData.weeklyTrends.activityTrend)}
-              <Text style={[styles.trendValue, { color: getTrendColor(mockData.weeklyTrends.activityTrend) }]}>
-                {mockData.weeklyTrends.activityTrend}
-              </Text>
-            </View>
+        {/* Data Status */}
+        {historicalData.length === 0 && !loading && (
+          <View style={styles.noDataContainer}>
+            <Text style={styles.noDataText}>No historical data available</Text>
+            <Text style={styles.noDataSubtext}>Data will appear here once sensor readings are collected</Text>
           </View>
-        </View>
-
+        )}
         {/* Daily History */}
-        <View style={styles.sectionContainer}>
-          <Text style={styles.sectionTitle}>Daily History</Text>
-          {mockData.dailyData.map((day, index) => (
-            <View key={day.date} style={styles.dayCard}>
-              <View style={styles.dayHeader}>
-                <View>
-                  <Text style={styles.dayName}>{day.dayName}</Text>
-                  <Text style={styles.dayDate}>{new Date(day.date).toLocaleDateString()}</Text>
+        {dailyData.length > 0 && (
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionTitle}>Daily History</Text>
+            {dailyData.map((day, index) => (
+              <View key={day.date} style={styles.dayCard}>
+                <View style={styles.dayHeader}>
+                  <View>
+                    <Text style={styles.dayName}>{day.dayName}</Text>
+                    <Text style={styles.dayDate}>{new Date(day.date).toLocaleDateString()}</Text>
+                  </View>
+                  <View style={styles.dayStatus}>
+                    <View style={[styles.statusDot, {
+                      backgroundColor: day.safeZoneStatus === 'inside' ? '#4CAF50' : '#F44336'
+                    }]} />
+                    <Text style={styles.statusText}>
+                      {day.safeZoneStatus === 'inside' ? 'Safe Zone' : 'Outside Zone'}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.dayStatus}>
-                  <View style={[styles.statusDot, { 
-                    backgroundColor: day.safeZoneStatus === 'inside' ? '#4CAF50' : '#F44336' 
-                  }]} />
-                  <Text style={styles.statusText}>
-                    {day.safeZoneStatus === 'inside' ? 'Safe Zone' : 'Outside Zone'}
-                  </Text>
+
+                <View style={styles.dayMetrics}>
+                  <View style={styles.metric}>
+                    <Text style={styles.metricLabel}>Data Points</Text>
+                    <Text style={styles.metricValue}>{day.dataPoints}</Text>
+                  </View>
+
+                  <View style={styles.metric}>
+                    <Text style={styles.metricLabel}>Temperature</Text>
+                    {day.temperature ? (
+                      <>
+                        <Text style={styles.metricValue}>{day.temperature.avg.toFixed(1)}°C</Text>
+                        <Text style={styles.metricRange}>
+                          {day.temperature.min.toFixed(1)}° - {day.temperature.max.toFixed(1)}°
+                        </Text>
+                      </>
+                    ) : (
+                      <Text style={styles.metricValue}>N/A</Text>
+                    )}
+                  </View>
+
+                  <View style={styles.metric}>
+                    <Text style={styles.metricLabel}>Pressure</Text>
+                    {day.pressure ? (
+                      <>
+                        <Text style={styles.metricValue}>{day.pressure.avg.toFixed(0)}</Text>
+                        <Text style={styles.metricRange}>
+                          {day.pressure.min.toFixed(0)} - {day.pressure.max.toFixed(0)}
+                        </Text>
+                      </>
+                    ) : (
+                      <Text style={styles.metricValue}>N/A</Text>
+                    )}
+                  </View>
                 </View>
-              </View>
-              
-              <View style={styles.dayMetrics}>
-                <View style={styles.metric}>
-                  <Text style={styles.metricLabel}>Steps</Text>
-                  <Text style={styles.metricValue}>{day.steps.toLocaleString()}</Text>
-                </View>
-                
-                <View style={styles.metric}>
-                  <Text style={styles.metricLabel}>Temperature</Text>
-                  <Text style={styles.metricValue}>{day.temperature.avg}°C</Text>
-                  <Text style={styles.metricRange}>
-                    {day.temperature.min}° - {day.temperature.max}°
-                  </Text>
-                </View>
-                
-                <View style={styles.metric}>
-                  <Text style={styles.metricLabel}>Pressure</Text>
-                  <Text style={styles.metricValue}>{day.pressure.avg}</Text>
-                  <Text style={styles.metricRange}>
-                    {day.pressure.min} - {day.pressure.max}
-                  </Text>
-                </View>
-              </View>
-              
-              {day.alerts > 0 && (
-                <View style={styles.alertsIndicator}>
+
+                <View style={styles.dayFooter}>
                   <Text style={styles.alertsText}>
-                    {day.alerts} alert{day.alerts > 1 ? 's' : ''} generated
+                    {day.alerts} alert{day.alerts !== 1 ? 's' : ''}
                   </Text>
                 </View>
-              )}
-            </View>
-          ))}
-        </View>
-
-        {/* Export Options */}
-        <View style={styles.exportContainer}>
-          <Text style={styles.sectionTitle}>Export Data</Text>
-          <View style={styles.exportButtons}>
-            <TouchableOpacity style={styles.exportButton}>
-              <Download size={20} color="#FFFFFF" />
-              <Text style={styles.exportButtonText}>Export PDF Report</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={[styles.exportButton, styles.secondaryExportButton]}>
-              <Download size={20} color="#2196F3" />
-              <Text style={styles.secondaryExportButtonText}>Export CSV Data</Text>
-            </TouchableOpacity>
+              </View>
+            ))}
           </View>
-        </View>
-
+        )}
         {/* Insights */}
-        <View style={styles.insightsContainer}>
-          <Text style={styles.sectionTitle}>Health Insights</Text>
-          <View style={styles.insightsCard}>
-            <Text style={styles.insightText}>
-              📊 Your average temperature has remained stable this week, indicating good foot health.
-            </Text>
-            <Text style={styles.insightText}>
-              🏃‍♂️ Activity levels have decreased by 15% compared to last week. Consider increasing daily movement.
-            </Text>
-            <Text style={styles.insightText}>
-              🛡️ You've spent 85% of your time within the safe zone, which is excellent for monitoring.
-            </Text>
+        {historicalData.length > 0 && (
+          <View style={styles.insightsContainer}>
+            <Text style={styles.sectionTitle}>Data Insights</Text>
+            <View style={styles.insightsCard}>
+              <Text style={styles.insightText}>
+                📊 Collected {summary.dataPoints} data points from your smart footwear sensors.
+              </Text>
+              {summary.avgTemp > 0 && (
+                <Text style={styles.insightText}>
+                  🌡️ Average temperature: {summary.avgTemp.toFixed(1)}°C - {summary.avgTemp > 37 ? 'Monitor for elevated readings' : 'Within normal range'}.
+                </Text>
+              )}
+              {summary.avgPressure > 0 && (
+                <Text style={styles.insightText}>
+                  ⚖️ Average pressure: {summary.avgPressure.toFixed(0)} - Monitoring foot pressure distribution.
+                </Text>
+              )}
+              <Text style={styles.insightText}>
+                🛡️ Safe zone compliance: {summary.safeZoneTime} - {parseInt(summary.safeZoneTime) > 80 ? 'Excellent monitoring coverage' : 'Consider staying within monitored areas more often'}.
+              </Text>
+            </View>
           </View>
-        </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -484,5 +562,73 @@ const styles = StyleSheet.create({
     color: '#333',
     lineHeight: 20,
     marginBottom: 12,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+  },
+  loadingText: {
+    fontSize: 16,
+    fontFamily: 'Roboto-Regular',
+    color: '#666',
+    marginTop: 16,
+  },
+  errorContainer: {
+    backgroundColor: '#FFEBEE',
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  errorText: {
+    fontSize: 14,
+    fontFamily: 'Roboto-Regular',
+    color: '#D32F2F',
+    flex: 1,
+  },
+  retryButton: {
+    backgroundColor: '#D32F2F',
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  retryButtonText: {
+    fontSize: 12,
+    fontFamily: 'Roboto-Medium',
+    color: '#FFFFFF',
+  },
+  noDataContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 32,
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  noDataText: {
+    fontSize: 16,
+    fontFamily: 'Roboto-Medium',
+    color: '#666',
+    marginBottom: 8,
+  },
+  noDataSubtext: {
+    fontSize: 14,
+    fontFamily: 'Roboto-Regular',
+    color: '#999',
+    textAlign: 'center',
+  },
+  dayFooter: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+  },
+  alertsText: {
+    fontSize: 12,
+    fontFamily: 'Roboto-Regular',
+    color: '#666',
   },
 });

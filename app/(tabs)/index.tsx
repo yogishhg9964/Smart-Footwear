@@ -365,8 +365,7 @@ export default function DashboardScreen() {
               <User size={24} color="#FFFFFF" />
             </View>
             <View>
-              <Text style={styles.greeting}>Good morning,</Text>
-              <Text style={styles.userName}>John Doe</Text>
+              {/* Greeting text removed */}
             </View>
           </View>
           <TouchableOpacity style={styles.notificationButton}>
