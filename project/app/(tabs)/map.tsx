@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker, Circle } from 'react-native-maps';
 import { MapPin, Navigation, Settings, Zap } from 'lucide-react-native';
@@ -73,6 +73,13 @@ export default function MapScreen() {
           <Settings size={20} color="#666" />
         </TouchableOpacity>
       </View>
+
+      <ScrollView
+        style={styles.scrollContainer}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={true}
+        bounces={true}
+      >
 
       {/* Map */}
       <View style={styles.mapContainer}>
@@ -160,6 +167,7 @@ export default function MapScreen() {
           Last Updated: {gpsData ? new Date(gpsData.createdAt).toLocaleTimeString() : 'Never'}
         </Text>
       </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -168,6 +176,14 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F5F5F5',
+  },
+  scrollContainer: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: 40,
+    minHeight: 600,
   },
   header: {
     flexDirection: 'row',
@@ -188,7 +204,7 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   mapContainer: {
-    flex: 1,
+    height: '50%',
     margin: 16,
     borderRadius: 16,
     overflow: 'hidden',

@@ -2,19 +2,85 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker, Circle } from 'react-native-maps';
-import { MapPin, Navigation, Settings, Zap } from 'lucide-react-native';
-import { fetchGpsData } from '../../services/ThingSpeakService'; // Adjust path as needed
-import { GpsData } from '../../models/GpsData'; // Adjust path as needed
+import { MapPin, Navigation, Settings, Zap, Plus, Trash2, AlertTriangle, Construction, Car, Building } from 'lucide-react-native';
+import { fetchGpsData } from '../../services/ThingSpeakService';
+import { GpsData } from '../../models/GpsData';
 import * as Location from 'expo-location';
 import { Modal, TextInput, Button } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+type DangerZoneCategory = 'construction' | 'traffic' | 'restricted' | 'hazard' | 'custom';
 
 type DangerZone = {
   id: number;
   latitude: number;
   longitude: number;
   radius: number;
+  category: DangerZoneCategory;
+  name: string;
+  description?: string;
+  color: string;
+  icon: string;
 };
+
+type ZoneTemplate = {
+  id: string;
+  name: string;
+  category: DangerZoneCategory;
+  defaultRadius: number;
+  color: string;
+  icon: string;
+  description: string;
+};
+
+// Zone templates for quick creation
+const ZONE_TEMPLATES: ZoneTemplate[] = [
+  {
+    id: 'construction',
+    name: 'Construction Site',
+    category: 'construction',
+    defaultRadius: 100,
+    color: '#FF9800',
+    icon: 'construction',
+    description: 'Active construction area with potential hazards'
+  },
+  {
+    id: 'traffic',
+    name: 'High Traffic Area',
+    category: 'traffic',
+    defaultRadius: 50,
+    color: '#F44336',
+    icon: 'car',
+    description: 'Busy road or intersection with heavy traffic'
+  },
+  {
+    id: 'restricted',
+    name: 'Restricted Zone',
+    category: 'restricted',
+    defaultRadius: 75,
+    color: '#9C27B0',
+    icon: 'building',
+    description: 'Private property or restricted access area'
+  },
+  {
+    id: 'hazard',
+    name: 'General Hazard',
+    category: 'hazard',
+    defaultRadius: 80,
+    color: '#E91E63',
+    icon: 'alert-triangle',
+    description: 'General dangerous area requiring caution'
+  },
+  {
+    id: 'custom',
+    name: 'Custom Zone',
+    category: 'custom',
+    defaultRadius: 100,
+    color: '#607D8B',
+    icon: 'alert-triangle',
+    description: 'Create a custom danger zone with your own name and radius'
+  }
+];
 
 // Helper function to get address from coordinates
 async function getAddressFromCoords(latitude: number, longitude: number) {
@@ -28,7 +94,8 @@ async function getAddressFromCoords(latitude: number, longitude: number) {
     const geocode = await Location.reverseGeocodeAsync({ latitude, longitude });
     if (geocode.length > 0) {
       const { name, street, city, region, postalCode, country } = geocode[0];
-      return `${name ?? ''} ${street ?? ''}, ${city ?? ''}, ${region ?? ''} ${postalCode ?? ''}, ${country ?? ''}`;
+      const address = `${name ?? ''} ${street ?? ''}, ${city ?? ''}, ${region ?? ''} ${postalCode ?? ''}, ${country ?? ''}`.trim();
+      return address || 'Address not found';
     } else {
       return 'Address not found';
     }
@@ -38,16 +105,41 @@ async function getAddressFromCoords(latitude: number, longitude: number) {
   }
 }
 
+// Helper function to get short location name
+function getShortLocationName(address: string): string {
+  if (!address || address === 'Address not found' || address === 'Permission Denied') {
+    return 'Unknown Location';
+  }
+
+  const parts = address.split(',');
+  if (parts.length >= 2) {
+    return `${parts[0].trim()}, ${parts[1].trim()}`;
+  }
+  return parts[0]?.trim() || 'Unknown Location';
+}
+
 export default function MapScreen() {
   const [gpsData, setGpsData] = useState<GpsData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const mapRef = useRef<MapView>(null);
   const [modalVisible, setModalVisible] = useState(false);
-  const [newZone, setNewZone] = useState<{ latitude: string; longitude: string; radius: string; }>({ latitude: '', longitude: '', radius: '' });
+  const [templateModalVisible, setTemplateModalVisible] = useState(false);
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<ZoneTemplate | null>(null);
+  const [selectedZone, setSelectedZone] = useState<DangerZone | null>(null);
+  const [tapToCreateMode, setTapToCreateMode] = useState(false);
+  const [pendingLocation, setPendingLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [currentLocationName, setCurrentLocationName] = useState('Loading location...');
   const [dangerStatus, setDangerStatus] = useState<string>('Checking...');
   const [dangerDistance, setDangerDistance] = useState<number>(0);
   const [dangerZones, setDangerZones] = useState<DangerZone[]>([]);
+  const [showCoordinates, setShowCoordinates] = useState(false);
+  const [customZoneName, setCustomZoneName] = useState('');
+  const [customZoneRadius, setCustomZoneRadius] = useState('100');
+  const [showCustomForm, setShowCustomForm] = useState(false);
+  const [deviceLocation, setDeviceLocation] = useState<{ latitude: number; longitude: number } | null>(null);
 
   // Memoize calculateDistance for performance
   const calculateDistance = useCallback((lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -121,31 +213,79 @@ export default function MapScreen() {
     }
   }, []); // No dependencies for loadDangerZones
 
+  // Get device current location
+  const getDeviceLocation = useCallback(async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.log('Permission to access location was denied');
+        return null;
+      }
+
+      const location = await Location.getCurrentPositionAsync({});
+      return {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude
+      };
+    } catch (error) {
+      console.error("Error getting device location:", error);
+      return null;
+    }
+  }, []);
+
+  // Check if sensor data is valid
+  const isValidSensorData = (data: GpsData): boolean => {
+    return data.latitude !== 0 && data.longitude !== 0 &&
+           data.latitude !== null && data.longitude !== null &&
+           !isNaN(data.latitude) && !isNaN(data.longitude);
+  };
+
   // Memoize getData to avoid re-creation on every render
   const getData = useCallback(async () => {
-    setLoading(true); // Set loading true at the start of fetch
+    setLoading(true);
     try {
       const data = await fetchGpsData();
-      setGpsData(data);
-      setError(null);
-      console.log("Fetched latest GPS data:", data);
+      console.log("Fetched GPS data from sensor:", data);
 
-      // Get address and update gpsData
-      const address = await getAddressFromCoords(data.latitude, data.longitude);
-      setGpsData(prev => prev ? { ...prev, address } : null); // Update state with address
+      let finalLocation = { latitude: data.latitude, longitude: data.longitude };
+
+      // Check if sensor data is invalid (0, null, or NaN)
+      if (!isValidSensorData(data)) {
+        const deviceLoc = await getDeviceLocation();
+        if (deviceLoc) {
+          finalLocation = deviceLoc;
+          setDeviceLocation(deviceLoc);
+        }
+      }
+
+      // Create updated GPS data with correct location
+      const updatedData = {
+        ...data,
+        latitude: finalLocation.latitude,
+        longitude: finalLocation.longitude
+      };
+
+      setGpsData(updatedData);
+      setError(null);
+
+      // Get address and update location name
+      const address = await getAddressFromCoords(finalLocation.latitude, finalLocation.longitude);
+      setGpsData(prev => prev ? { ...prev, address } : null);
+      setCurrentLocationName(getShortLocationName(address));
 
       // Check danger zones status
-      const { status, distance } = checkDangerZones(data.latitude, data.longitude, dangerZones);
+      const { status, distance } = checkDangerZones(finalLocation.latitude, finalLocation.longitude, dangerZones);
       setDangerStatus(status);
       setDangerDistance(distance);
 
     } catch (err) {
       setError("Failed to fetch GPS data");
+      setCurrentLocationName("Location unavailable");
       console.error(err);
     } finally {
       setLoading(false);
     }
-  }, [dangerZones, checkDangerZones]); // Dependencies: dangerZones and checkDangerZones
+  }, [dangerZones, checkDangerZones, getDeviceLocation]);
 
   // Effect to load danger zones once on component mount
   useEffect(() => {
@@ -164,55 +304,152 @@ export default function MapScreen() {
     return () => clearInterval(interval); // Cleanup interval on unmount
   }, [getData]); // Dependency on getData (which itself depends on dangerZones and checkDangerZones)
 
-  const mockData = {
-    currentLocation: {
-      latitude: gpsData?.latitude || 12.9716, // Default to Bengaluru city center if no GPS data yet
-      longitude: gpsData?.longitude || 77.5946,
-      address: gpsData?.address || 'Loading address...',
-    },
+  // Get current location for map display
+  const getCurrentLocation = () => {
+    if (gpsData && gpsData.latitude !== 0 && gpsData.longitude !== 0) {
+      return {
+        latitude: gpsData.latitude,
+        longitude: gpsData.longitude,
+        address: gpsData.address || 'Current Location'
+      };
+    }
+
+    // Fallback to device location if available
+    if (deviceLocation) {
+      return {
+        latitude: deviceLocation.latitude,
+        longitude: deviceLocation.longitude,
+        address: 'Current Location'
+      };
+    }
+
+    // Default location if nothing is available
+    return {
+      latitude: 12.9716,
+      longitude: 77.5946,
+      address: 'Loading location...'
+    };
   };
 
-  const handleAddDangerZone = async () => {
-    const lat = parseFloat(newZone.latitude);
-    const lon = parseFloat(newZone.longitude);
-    const rad = parseFloat(newZone.radius);
+  const currentLocation = getCurrentLocation();
 
-    console.log("Input values for new zone:", { lat, lon, rad });
+  // Handle map press for tap-to-create zones
+  const handleMapPress = (event: any) => {
+    if (tapToCreateMode) {
+      const { latitude, longitude } = event.nativeEvent.coordinate;
+      setPendingLocation({ latitude, longitude });
+      setTapToCreateMode(false);
+      setTemplateModalVisible(true);
+    }
+  };
 
-    if (isNaN(lat) || isNaN(lon) || isNaN(rad)) {
-      Alert.alert('Invalid Input', 'Please enter valid numbers for latitude, longitude, and radius.');
+  // Create zone from template
+  const handleCreateZoneFromTemplate = async (template: ZoneTemplate) => {
+    if (!pendingLocation) return;
+
+    if (template.id === 'custom') {
+      setShowCustomForm(true);
       return;
     }
-    if (rad <= 0) {
-      Alert.alert('Invalid Input', 'Radius must be a positive number.');
-      return;
-    }
 
-    const newId = Date.now(); // Simple unique ID
-    const updatedZones = [
-      ...dangerZones,
-      {
-        id: newId,
-        latitude: lat,
-        longitude: lon,
-        radius: rad,
-      },
-    ];
+    const newId = Date.now();
+    const address = await getAddressFromCoords(pendingLocation.latitude, pendingLocation.longitude);
+
+    const newZone: DangerZone = {
+      id: newId,
+      latitude: pendingLocation.latitude,
+      longitude: pendingLocation.longitude,
+      radius: template.defaultRadius,
+      category: template.category,
+      name: template.name,
+      description: template.description,
+      color: template.color,
+      icon: template.icon
+    };
+
+    const updatedZones = [...dangerZones, newZone];
     setDangerZones(updatedZones);
-    console.log("Updated danger zones array:", updatedZones);
-    await saveDangerZones(updatedZones); // Save updated zones to AsyncStorage
-    setNewZone({ latitude: '', longitude: '', radius: '' }); // Clear input fields
-    setModalVisible(false); // Close modal
-    getData(); // Trigger an immediate data fetch to re-evaluate status with new zone
-    // Optionally, animate map to the new zone
+    await saveDangerZones(updatedZones);
+
+    setTemplateModalVisible(false);
+    setPendingLocation(null);
+    getData();
+
+    // Animate to new zone
     if (mapRef.current) {
       mapRef.current.animateToRegion({
-        latitude: lat,
-        longitude: lon,
-        latitudeDelta: rad / 100000, // Adjust delta based on radius for good zoom
-        longitudeDelta: rad / 100000,
+        latitude: pendingLocation.latitude,
+        longitude: pendingLocation.longitude,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
       }, 1000);
     }
+  };
+
+  // Create custom zone
+  const handleCreateCustomZone = async () => {
+    if (!pendingLocation || !customZoneName.trim()) {
+      Alert.alert('Error', 'Please enter a zone name');
+      return;
+    }
+
+    const radius = parseInt(customZoneRadius);
+    if (isNaN(radius) || radius <= 0) {
+      Alert.alert('Error', 'Please enter a valid radius');
+      return;
+    }
+
+    const newId = Date.now();
+    const newZone: DangerZone = {
+      id: newId,
+      latitude: pendingLocation.latitude,
+      longitude: pendingLocation.longitude,
+      radius: radius,
+      category: 'custom',
+      name: customZoneName.trim(),
+      description: `Custom danger zone: ${customZoneName.trim()}`,
+      color: '#607D8B',
+      icon: 'alert-triangle'
+    };
+
+    const updatedZones = [...dangerZones, newZone];
+    setDangerZones(updatedZones);
+    await saveDangerZones(updatedZones);
+
+    setTemplateModalVisible(false);
+    setShowCustomForm(false);
+    setPendingLocation(null);
+    setCustomZoneName('');
+    setCustomZoneRadius('100');
+    getData();
+
+    // Animate to new zone
+    if (mapRef.current) {
+      mapRef.current.animateToRegion({
+        latitude: pendingLocation.latitude,
+        longitude: pendingLocation.longitude,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      }, 1000);
+    }
+  };
+
+  // Handle zone editing
+  const handleEditZone = (zone: DangerZone) => {
+    setSelectedZone(zone);
+    setEditModalVisible(true);
+  };
+
+  // Update existing zone
+  const handleUpdateZone = async (updatedZone: DangerZone) => {
+    const updatedZones = dangerZones.map(zone =>
+      zone.id === updatedZone.id ? updatedZone : zone
+    );
+    setDangerZones(updatedZones);
+    await saveDangerZones(updatedZones);
+    setEditModalVisible(false);
+    setSelectedZone(null);
+    getData();
   };
 
   const handleDeleteDangerZone = async (id: number) => {
@@ -239,10 +476,11 @@ export default function MapScreen() {
   };
 
   const handleCenterMap = () => {
-    if (mapRef.current && gpsData) {
+    if (mapRef.current) {
+      const location = getCurrentLocation();
       mapRef.current.animateToRegion({
-        latitude: gpsData.latitude,
-        longitude: gpsData.longitude,
+        latitude: location.latitude,
+        longitude: location.longitude,
         latitudeDelta: 0.01,
         longitudeDelta: 0.01,
       }, 1000);
@@ -251,60 +489,99 @@ export default function MapScreen() {
     }
   };
 
+  // Get zone icon component
+  const getZoneIcon = (iconName: string, color: string) => {
+    const iconProps = { size: 16, color };
+    switch (iconName) {
+      case 'construction': return <Construction {...iconProps} />;
+      case 'car': return <Car {...iconProps} />;
+      case 'building': return <Building {...iconProps} />;
+      case 'alert-triangle': return <AlertTriangle {...iconProps} />;
+      default: return <AlertTriangle {...iconProps} />;
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
+      {/* Enhanced Header - Fixed outside ScrollView */}
       <View style={styles.header}>
-        <Text style={styles.title}>Live Location</Text>
-        <TouchableOpacity style={styles.settingsButton} onPress={() => setModalVisible(true)}>
-          <Settings size={20} color="#666" />
-        </TouchableOpacity>
+        <View style={styles.headerLeft}>
+          <Text style={styles.title}>Smart Location</Text>
+          <Text style={styles.locationName}>{currentLocationName}</Text>
+        </View>
+        <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={[styles.headerButton, showCoordinates && styles.headerButtonActive]}
+            onPress={() => setShowCoordinates(!showCoordinates)}
+          >
+            <MapPin size={18} color={showCoordinates ? "#2196F3" : "#666"} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.headerButton} onPress={() => setModalVisible(true)}>
+            <Settings size={18} color="#666" />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      {/* Map */}
-      <View style={styles.mapContainer}>
-        <MapView
-          ref={mapRef}
-          style={styles.map}
-          // Use 'region' for dynamic updates based on GPS data
-          region={{
-            latitude: mockData.currentLocation.latitude,
-            longitude: mockData.currentLocation.longitude,
-            latitudeDelta: 0.03, // You might adjust these based on how zoomed out you want the initial view
-            longitudeDelta: 0.03,
-          }}
-          // If you want the map to automatically pan to the current location marker as it updates:
-          // onRegionChangeComplete={(region) => console.log('Map moved to:', region)}
-        >
-          {/* Current Location Marker */}
-          {gpsData && ( // Only render current location marker if gpsData is available
-            <Marker
-              coordinate={{
-                latitude: gpsData.latitude,
-                longitude: gpsData.longitude,
-              }}
-              title="Current Location"
-              description={gpsData.address}
-            >
-              <View style={styles.currentLocationDot} />
-            </Marker>
-          )}
+      <ScrollView
+        style={styles.scrollContainer}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={true}
+        bounces={true}
+      >
 
-          {/* Danger Zones Markers and Circles */}
+        {/* Tap-to-Create Mode Banner */}
+        {tapToCreateMode && (
+          <View style={styles.tapModeBanner}>
+            <Text style={styles.tapModeText}>Tap on the map to create a danger zone</Text>
+            <TouchableOpacity onPress={() => setTapToCreateMode(false)}>
+              <Text style={styles.tapModeCancel}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Map */}
+        <View style={styles.mapContainer}>
+          <MapView
+            ref={mapRef}
+            style={styles.map}
+            region={{
+              latitude: currentLocation.latitude,
+              longitude: currentLocation.longitude,
+              latitudeDelta: 0.03,
+              longitudeDelta: 0.03,
+            }}
+            onPress={handleMapPress}
+          >
+          {/* Current Location Marker */}
+          <Marker
+            coordinate={{
+              latitude: currentLocation.latitude,
+              longitude: currentLocation.longitude,
+            }}
+            title="Current Location"
+            description={currentLocation.address}
+          >
+            <View style={styles.currentLocationDot} />
+          </Marker>
+
+          {/* Enhanced Danger Zones */}
           {dangerZones.map(zone => (
             <React.Fragment key={zone.id}>
               <Marker
                 coordinate={{ latitude: zone.latitude, longitude: zone.longitude }}
-                title={`Danger Zone ${zone.id}`}
-                description={`Radius: ${zone.radius.toFixed(0)}m`}
-                pinColor="red"
-                onCalloutPress={() => handleDeleteDangerZone(zone.id)}
-              />
+                title={zone.name}
+                description={`${zone.description} • ${zone.radius}m radius`}
+                onCalloutPress={() => handleEditZone(zone)}
+              >
+                <View style={[styles.zoneMarker, { backgroundColor: zone.color }]}>
+                  {getZoneIcon(zone.icon, '#FFFFFF')}
+                </View>
+              </Marker>
               <Circle
                 center={{ latitude: zone.latitude, longitude: zone.longitude }}
                 radius={zone.radius}
-                strokeColor="rgba(255, 0, 0, 0.8)"
-                fillColor="rgba(255, 0, 0, 0.3)"
+                strokeColor={zone.color}
+                fillColor={`${zone.color}30`}
                 strokeWidth={2}
               />
             </React.Fragment>
@@ -312,7 +589,123 @@ export default function MapScreen() {
         </MapView>
       </View>
 
-      {/* Modal for adding/editing Danger Zones */}
+      {/* Zone Template Selection Modal */}
+      <Modal
+        visible={templateModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setTemplateModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Danger Zone Type</Text>
+            <Text style={styles.modalSubtitle}>Choose a template for your danger zone</Text>
+
+            {!showCustomForm ? (
+              <>
+                <ScrollView style={styles.templateList}>
+                  {ZONE_TEMPLATES.map(template => (
+                    <TouchableOpacity
+                      key={template.id}
+                      style={[styles.templateItem, { borderLeftColor: template.color }]}
+                      onPress={() => {
+                        setSelectedTemplate(template);
+                      }}
+                    >
+                      <View style={styles.templateIcon}>
+                        {getZoneIcon(template.icon, template.color)}
+                      </View>
+                      <View style={styles.templateInfo}>
+                        <Text style={styles.templateName}>{template.name}</Text>
+                        <Text style={styles.templateDescription}>{template.description}</Text>
+                        <Text style={styles.templateRadius}>Default radius: {template.defaultRadius}m</Text>
+                      </View>
+                      {selectedTemplate?.id === template.id && (
+                        <View style={styles.selectedIndicator}>
+                          <Text style={styles.selectedText}>✓</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={styles.modalCancelButton}
+                    onPress={() => {
+                      setTemplateModalVisible(false);
+                      setPendingLocation(null);
+                      setSelectedTemplate(null);
+                    }}
+                  >
+                    <Text style={styles.modalCancelButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.modalOkButton, !selectedTemplate && styles.disabledButton]}
+                    onPress={() => {
+                      if (selectedTemplate) {
+                        handleCreateZoneFromTemplate(selectedTemplate);
+                        setSelectedTemplate(null);
+                      }
+                    }}
+                    disabled={!selectedTemplate}
+                  >
+                    <Text style={[styles.modalOkButtonText, !selectedTemplate && styles.disabledButtonText]}>
+                      Create Zone
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.customFormTitle}>Create Custom Zone</Text>
+
+                <View style={styles.customForm}>
+                  <Text style={styles.inputLabel}>Zone Name</Text>
+                  <TextInput
+                    style={styles.customInput}
+                    placeholder="Enter zone name (e.g., Construction Site)"
+                    value={customZoneName}
+                    onChangeText={setCustomZoneName}
+                  />
+
+                  <Text style={styles.inputLabel}>Radius (meters)</Text>
+                  <TextInput
+                    style={styles.customInput}
+                    placeholder="Enter radius in meters"
+                    value={customZoneRadius}
+                    onChangeText={setCustomZoneRadius}
+                    keyboardType="numeric"
+                  />
+                </View>
+
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={styles.modalCancelButton}
+                    onPress={() => {
+                      setShowCustomForm(false);
+                      setCustomZoneName('');
+                      setCustomZoneRadius('100');
+                    }}
+                  >
+                    <Text style={styles.modalCancelButtonText}>Back</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.modalOkButton}
+                    onPress={handleCreateCustomZone}
+                  >
+                    <Text style={styles.modalOkButtonText}>Create Zone</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Zone Management Modal */}
       <Modal
         visible={modalVisible}
         animationType="slide"
@@ -320,62 +713,89 @@ export default function MapScreen() {
         onRequestClose={() => setModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
-          <ScrollView contentContainerStyle={styles.scrollViewContent}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Manage Danger Zones</Text>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Manage Danger Zones</Text>
+            <Text style={styles.modalSubtitle}>
+              {dangerZones.length} zone{dangerZones.length !== 1 ? 's' : ''} created
+            </Text>
 
-              <TextInput
-                placeholder="Latitude (e.g., 12.9716)"
-                keyboardType="numeric"
-                style={styles.inputStyle}
-                value={newZone.latitude}
-                onChangeText={(text) => setNewZone({ ...newZone, latitude: text })}
-              />
-              <TextInput
-                placeholder="Longitude (e.g., 77.5946)"
-                keyboardType="numeric"
-                style={styles.inputStyle}
-                value={newZone.longitude}
-                onChangeText={(text) => setNewZone({ ...newZone, longitude: text })}
-              />
-              <TextInput
-                placeholder="Radius (meters, e.g., 500)"
-                keyboardType="numeric"
-                style={styles.inputStyle}
-                value={newZone.radius}
-                onChangeText={(text) => setNewZone({ ...newZone, radius: text })}
-              />
-
-              <View style={styles.modalButtons}>
-                <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCancelButton}>
-                  <Text style={styles.modalCancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={handleAddDangerZone}
-                  style={styles.modalAddButton}
-                >
-                  <Text style={styles.modalAddButtonText}>Add Zone</Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Display existing danger zones with delete option */}
-              {dangerZones.length > 0 && (
-                <View style={styles.existingZonesContainer}>
-                  <Text style={styles.existingZonesTitle}>Existing Danger Zones:</Text>
-                  {dangerZones.map(zone => (
-                    <View key={zone.id} style={styles.zoneItem}>
-                      <Text style={styles.zoneItemText}>Lat: {zone.latitude.toFixed(4)}, Lng: {zone.longitude.toFixed(4)}, Rad: {zone.radius.toFixed(0)}m</Text>
-                      <TouchableOpacity onPress={() => handleDeleteDangerZone(zone.id)}>
-                        <Text style={styles.deleteZoneText}>Delete</Text>
+            {dangerZones.length > 0 ? (
+              <ScrollView style={styles.zonesList}>
+                {dangerZones.map(zone => (
+                  <View key={zone.id} style={[styles.zoneListItem, { borderLeftColor: zone.color }]}>
+                    <View style={styles.zoneListIcon}>
+                      {getZoneIcon(zone.icon, zone.color)}
+                    </View>
+                    <View style={styles.zoneListInfo}>
+                      <Text style={styles.zoneListName}>{zone.name}</Text>
+                      <Text style={styles.zoneListDetails}>
+                        {zone.radius}m radius • {zone.category}
+                      </Text>
+                      <Text style={styles.zoneListDescription}>{zone.description}</Text>
+                    </View>
+                    <View style={styles.zoneListActions}>
+                      <TouchableOpacity
+                        style={styles.zoneActionButton}
+                        onPress={() => {
+                          if (mapRef.current) {
+                            mapRef.current.animateToRegion({
+                              latitude: zone.latitude,
+                              longitude: zone.longitude,
+                              latitudeDelta: 0.01,
+                              longitudeDelta: 0.01,
+                            }, 1000);
+                          }
+                          setModalVisible(false);
+                        }}
+                      >
+                        <MapPin size={16} color="#2196F3" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.zoneActionButton}
+                        onPress={() => {
+                          Alert.alert(
+                            'Delete Zone',
+                            `Are you sure you want to delete "${zone.name}"?`,
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              { text: 'Delete', style: 'destructive', onPress: () => handleDeleteDangerZone(zone.id) }
+                            ]
+                          );
+                        }}
+                      >
+                        <Trash2 size={16} color="#F44336" />
                       </TouchableOpacity>
                     </View>
-                  ))}
-                </View>
-              )}
+                  </View>
+                ))}
+              </ScrollView>
+            ) : (
+              <View style={styles.emptyZones}>
+                <AlertTriangle size={48} color="#CCC" />
+                <Text style={styles.emptyZonesText}>No danger zones created yet</Text>
+                <Text style={styles.emptyZonesSubtext}>Tap the "Add Zone" button to create your first danger zone</Text>
+              </View>
+            )}
 
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelButton}
+                onPress={() => setModalVisible(false)}
+              >
+                <Text style={styles.modalCancelButtonText}>Close</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.modalOkButton}
+                onPress={() => {
+                  setModalVisible(false);
+                  setTapToCreateMode(true);
+                }}
+              >
+                <Text style={styles.modalOkButtonText}>Add New Zone</Text>
+              </TouchableOpacity>
             </View>
-          </ScrollView>
+          </View>
         </View>
       </Modal>
 
@@ -384,8 +804,8 @@ export default function MapScreen() {
         <View style={styles.infoCard}>
           <MapPin size={20} color="#2196F3" />
           <View style={styles.infoContent}>
-            <Text style={styles.infoTitle}>Current Address</Text>
-            <Text style={styles.infoText}>{mockData.currentLocation.address}</Text>
+            <Text style={styles.infoTitle}>Current Location</Text>
+            <Text style={styles.infoText}>{currentLocationName}</Text>
           </View>
         </View>
 
@@ -406,19 +826,30 @@ export default function MapScreen() {
         </View>
       </View>
 
-      {/* Action Buttons */}
+      {/* Enhanced Action Buttons */}
       <View style={styles.actionButtons}>
-        <TouchableOpacity style={styles.primaryButton} onPress={handleCenterMap}>
-          <Navigation size={20} color="#FFFFFF" />
-          <Text style={styles.primaryButtonText}>Center Map</Text>
+        <TouchableOpacity
+          style={[styles.actionButton, styles.primaryActionButton]}
+          onPress={() => setTapToCreateMode(true)}
+        >
+          <Plus size={18} color="#FFFFFF" />
+          <Text style={styles.primaryButtonText}>Add Zone</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.secondaryButton} onPress={() => {
-          setNewZone({ latitude: '', longitude: '', radius: '' }); // Clear input fields when opening modal
-          setModalVisible(true);
-        }}>
-          <Settings size={20} color="#2196F3" />
-          <Text style={styles.secondaryButtonText}>Manage Danger Zones</Text>
+        <TouchableOpacity
+          style={[styles.actionButton, styles.secondaryActionButton]}
+          onPress={handleCenterMap}
+        >
+          <Navigation size={18} color="#2196F3" />
+          <Text style={styles.secondaryButtonText}>Center</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.actionButton, styles.secondaryActionButton]}
+          onPress={() => setModalVisible(true)}
+        >
+          <Settings size={18} color="#2196F3" />
+          <Text style={styles.secondaryButtonText}>Manage</Text>
         </TouchableOpacity>
       </View>
 
@@ -440,6 +871,7 @@ export default function MapScreen() {
           Last Updated: {gpsData ? new Date(gpsData.createdAt).toLocaleTimeString() : 'Never'}
         </Text>
       </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -448,6 +880,14 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F5F5F5',
+  },
+  scrollContainer: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: 40,
+    minHeight: 800,
   },
   header: {
     flexDirection: 'row',
@@ -469,9 +909,9 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   mapContainer: {
-    
-    height: 100,
-    margin: 16,
+    height: 300,
+    marginHorizontal: 16,
+    marginVertical: 8,
     borderRadius: 16,
     overflow: 'hidden',
     shadowColor: '#000',
@@ -496,9 +936,10 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 3,
   },
+
   locationInfo: {
     paddingHorizontal: 16,
-    paddingBottom: 16,
+    paddingVertical: 8,
   },
   infoCard: {
     flexDirection: 'row',
@@ -533,7 +974,8 @@ const styles = StyleSheet.create({
   actionButtons: {
     flexDirection: 'row',
     paddingHorizontal: 16,
-    paddingBottom: 16,
+    paddingVertical: 16,
+    marginTop: 8,
   },
   primaryButton: {
     flex: 1,
@@ -574,7 +1016,8 @@ const styles = StyleSheet.create({
   coordinatesContainer: {
     backgroundColor: '#FFFFFF',
     marginHorizontal: 16,
-    marginBottom: 16,
+    marginTop: 8,
+    marginBottom: 20,
     borderRadius: 12,
     padding: 16,
     shadowColor: '#000',
@@ -621,14 +1064,20 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    padding: 20,
   },
   modalContent: {
-    width: '85%',
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 20,
-    maxHeight: '80%', // Limit modal height
+    width: '90%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 24,
+    maxHeight: '85%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
   },
   modalTitle: {
     fontSize: 20, // Slightly larger title
@@ -644,27 +1093,34 @@ const styles = StyleSheet.create({
   },
   modalCancelButton: {
     flex: 1,
-    padding: 12, // Increased padding
-    borderRadius: 8,
+    padding: 16,
+    borderRadius: 12,
     backgroundColor: '#E0E0E0',
     marginRight: 10,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#CCCCCC',
   },
   modalCancelButtonText: {
-    color: 'black',
+    color: '#333333',
     fontWeight: 'bold',
     fontSize: 16,
   },
   modalAddButton: {
     flex: 1,
-    padding: 12, // Increased padding
-    borderRadius: 8,
-    backgroundColor: '#4CAF50',
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#2196F3',
     marginLeft: 10,
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   modalAddButtonText: {
-    color: 'white',
+    color: '#FFFFFF',
     fontWeight: 'bold',
     fontSize: 16,
   },
@@ -701,5 +1157,263 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center', // Center content in the scroll view
+  },
+  // Enhanced Header Styles
+  headerLeft: {
+    flex: 1,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  locationName: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 2,
+  },
+  headerButton: {
+    padding: 8,
+    marginLeft: 8,
+    borderRadius: 6,
+  },
+  headerButtonActive: {
+    backgroundColor: '#E3F2FD',
+  },
+  // Tap Mode Banner
+  tapModeBanner: {
+    backgroundColor: '#2196F3',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  tapModeText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  tapModeCancel: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold',
+    textDecorationLine: 'underline',
+  },
+  // Enhanced Zone Marker
+  zoneMarker: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  // Template Modal Styles
+  modalSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  templateList: {
+    maxHeight: 300,
+    marginBottom: 20,
+  },
+  templateItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8F9FA',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+  },
+  templateIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  templateInfo: {
+    flex: 1,
+  },
+  templateName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 4,
+  },
+  templateDescription: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 4,
+  },
+  templateRadius: {
+    fontSize: 12,
+    color: '#999',
+  },
+  // Zone Management Modal Styles
+  zonesList: {
+    maxHeight: 300,
+    marginBottom: 20,
+  },
+  zoneListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8F9FA',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+  },
+  zoneListIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  zoneListInfo: {
+    flex: 1,
+  },
+  zoneListName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 4,
+  },
+  zoneListDetails: {
+    fontSize: 14,
+    color: '#666',
+  },
+  zoneListActions: {
+    flexDirection: 'row',
+  },
+  zoneActionButton: {
+    padding: 8,
+    marginLeft: 8,
+    borderRadius: 6,
+    backgroundColor: '#FFFFFF',
+  },
+  emptyZones: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyZonesText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#666',
+    marginBottom: 8,
+  },
+  emptyZonesSubtext: {
+    fontSize: 14,
+    color: '#999',
+    textAlign: 'center',
+  },
+  // Enhanced Info Card Styles
+  infoIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#F0F8FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Enhanced Action Button Styles
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    padding: 12,
+    marginHorizontal: 4,
+  },
+  primaryActionButton: {
+    backgroundColor: '#2196F3',
+  },
+  secondaryActionButton: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  // Custom Form Styles
+  customFormTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  customForm: {
+    marginBottom: 20,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+    marginTop: 12,
+  },
+  customInput: {
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    backgroundColor: '#FFFFFF',
+  },
+  modalOkButton: {
+    flex: 1,
+    backgroundColor: '#2196F3',
+    borderRadius: 8,
+    padding: 12,
+    marginLeft: 8,
+    alignItems: 'center',
+  },
+  modalOkButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  // Enhanced Zone List Styles
+  zoneListDescription: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 4,
+  },
+  // Selection Indicator Styles
+  selectedIndicator: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#2196F3',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+  selectedText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  // Disabled Button Styles
+  disabledButton: {
+    backgroundColor: '#CCCCCC',
+    opacity: 0.6,
+  },
+  disabledButtonText: {
+    color: '#999999',
   },
 });
