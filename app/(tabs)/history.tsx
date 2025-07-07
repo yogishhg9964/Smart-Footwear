@@ -216,7 +216,7 @@ export default function HistoryScreen() {
               <Text style={styles.summaryValue}>
                 {summary.avgPressure > 0 ? summary.avgPressure.toFixed(0) : 'N/A'}
               </Text>
-              <Text style={styles.summaryLabel}>Avg Pressure</Text>
+              <Text style={styles.summaryLabel}>Avg Pressure (FSR)</Text>
             </View>
             <View style={styles.summaryCard}>
               <Text style={styles.summaryValue}>{summary.safeZoneTime}</Text>
@@ -312,7 +312,7 @@ export default function HistoryScreen() {
               )}
               {summary.avgPressure > 0 && (
                 <Text style={styles.insightText}>
-                  ⚖️ Average pressure: {summary.avgPressure.toFixed(0)} - Monitoring foot pressure distribution.
+                  ⚖️ Average pressure: {summary.avgPressure.toFixed(0)} FSR - Monitoring foot pressure distribution.
                 </Text>
               )}
               <Text style={styles.insightText}>

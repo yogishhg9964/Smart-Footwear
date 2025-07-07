@@ -43,8 +43,8 @@ export default function DashboardScreen() {
       distanceFromSafeZone: (gpsData?.distance || 0) / 1000, // convert meters to km
     },
     sensors: {
-      pressure: 850,
-      temperature: 36.8,
+      pressure: gpsData?.pressure || 0,
+      temperature: gpsData?.temperature || 0,
       lastUpdate: gpsData ? new Date(gpsData.createdAt).toLocaleTimeString() : '2 min ago',
     },
     alerts: [
@@ -111,15 +111,23 @@ export default function DashboardScreen() {
             <View style={styles.sensorCard}>
               <Activity size={20} color="#FF9800" />
               <Text style={styles.sensorLabel}>Pressure</Text>
-              <Text style={styles.sensorValue}>{mockData.sensors.pressure}</Text>
-              <Text style={styles.sensorUnit}>hPa</Text>
+              <Text style={styles.sensorValue}>
+                {mockData.sensors.pressure !== 0 ? mockData.sensors.pressure : 'N/A'}
+              </Text>
+              <Text style={styles.sensorUnit}>FSR</Text>
             </View>
             
             <View style={styles.sensorCard}>
               <Thermometer size={20} color="#F44336" />
               <Text style={styles.sensorLabel}>Temperature</Text>
-              <Text style={styles.sensorValue}>{mockData.sensors.temperature}°C</Text>
-              <Text style={styles.sensorUnit}>Normal</Text>
+              <Text style={styles.sensorValue}>
+                {mockData.sensors.temperature !== 0 ? `${mockData.sensors.temperature}°C` : 'N/A'}
+              </Text>
+              <Text style={styles.sensorUnit}>
+                {mockData.sensors.temperature > 37 ? 'HIGH' :
+                 mockData.sensors.temperature < 36 ? 'LOW' :
+                 mockData.sensors.temperature !== 0 ? 'NORMAL' : 'N/A'}
+              </Text>
             </View>
           </View>
           <Text style={styles.lastUpdate}>Last updated: {mockData.sensors.lastUpdate}</Text>

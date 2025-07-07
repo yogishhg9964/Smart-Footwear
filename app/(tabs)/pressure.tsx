@@ -13,6 +13,7 @@ export default function PressureScreen() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [pressureHistory, setPressureHistory] = useState<{ time: string; pressure: number; }[]>([]);
+  const [gpsData, setGpsData] = useState<GpsData | null>(null);
 
   const NORMAL_PRESSURE_RANGE = { min: 800, max: 1050 };
 
@@ -44,6 +45,7 @@ export default function PressureScreen() {
     setLoading(true);
     try {
       const data: GpsData = await fetchGpsData();
+      setGpsData(data); // Store the full GPS data
 
       if (data && data.pressure !== undefined && data.pressure !== null) {
         const newPressure = data.pressure;
@@ -157,8 +159,11 @@ export default function PressureScreen() {
           </View>
 
           <View style={styles.pressureDisplay}>
-            <Text style={styles.pressureValue}>{currentPressure !== null ? currentPressure.toFixed(1) : 'N/A'}</Text>
-            <Text style={styles.pressureUnit}>hPa</Text>
+            <Text style={styles.pressureValue}>
+              {currentPressure !== null ? currentPressure.toFixed(0) :
+               gpsData?.pressure !== undefined ? gpsData.pressure.toFixed(0) : 'N/A'}
+            </Text>
+            <Text style={styles.pressureUnit}>FSR</Text>
           </View>
 
           <View style={styles.pressureStatus}>

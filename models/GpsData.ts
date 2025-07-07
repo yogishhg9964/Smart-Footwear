@@ -16,12 +16,11 @@ export const parseGpsData = (json: any): GpsData => {
   return {
     createdAt: json.created_at,
     entryId: json.entry_id,
-    latitude: parseFloat(json.field1),
-    longitude: parseFloat(json.field2),
-    distance: parseFloat(json.field3),
-    pressure: json.field6 ? parseFloat(json.field6) : undefined,
-    temperature: json.field5 ? parseFloat(json.field5) : undefined,
-    status: json.field4,
-
+    latitude: parseFloat(json.field1) || 0,
+    longitude: parseFloat(json.field2) || 0,
+    distance: 0, // Will be calculated based on danger zones
+    temperature: json.field3 ? parseFloat(json.field3) : undefined,
+    pressure: json.field4 ? parseFloat(json.field4) : undefined,
+    status: json.field5 === "1" ? "outside" : "inside", // Object detected = outside safe zone
   };
 };

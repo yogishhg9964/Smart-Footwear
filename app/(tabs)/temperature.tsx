@@ -14,6 +14,7 @@ export default function TemperatureScreen() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [temperatureHistory, setTemperatureHistory] = useState<{ time: string; temperature: number; }[]>([]);
+  const [gpsData, setGpsData] = useState<GpsData | null>(null);
 
   // Existing Implementation: Define temperature thresholds for status and color coding
   // DO NOT CHANGE THESE VALUES if they are your existing thresholds
@@ -61,6 +62,7 @@ export default function TemperatureScreen() {
     setLoading(true);
     try {
       const data: GpsData = await fetchGpsData();
+      setGpsData(data); // Store the full GPS data
 
       if (data && data.temperature !== undefined && data.temperature !== null) {
         const newTemperature = data.temperature;
@@ -233,7 +235,10 @@ export default function TemperatureScreen() {
           </View>
 
           <View style={styles.temperatureDisplay}>
-            <Text style={styles.temperatureValue}>{currentTemperature !== null ? currentTemperature.toFixed(1) : 'N/A'}</Text>
+            <Text style={styles.temperatureValue}>
+              {currentTemperature !== null ? currentTemperature.toFixed(1) :
+               gpsData?.temperature !== undefined ? gpsData.temperature.toFixed(1) : 'N/A'}
+            </Text>
             <Text style={styles.temperatureUnit}>°C</Text>
           </View>
 
